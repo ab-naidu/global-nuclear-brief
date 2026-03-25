@@ -1,7 +1,7 @@
 # Project Submission (Global Nuclear Brief)
 
 ## Team
-- Team name: TBD
+- Team name: Policy Pulse
 - Members: Appalanaidu Bobbili
 
 ## Project Title
