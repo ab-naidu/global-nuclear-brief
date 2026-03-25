@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -9,12 +10,30 @@ from typing import Any, Dict, List
 
 APIFY_API_URL = "https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
 CONTEXTUAL_API_URL = "https://api.contextual.ai/v1/generate"
-DEFAULT_ACTOR = "practicaltools/apify-google-news-scraper"
+DEFAULT_ACTOR = "practicaltools~apify-google-news-scraper"
 DEFAULT_QUERY = "nuclear energy policy OR nuclear power regulation"
 
 
 def eprint(msg: str) -> None:
     sys.stderr.write(msg + "\n")
+
+
+def load_env_file(path: str) -> None:
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError as exc:
+        eprint(f"Warning: failed to read {path}: {exc}")
 
 
 def http_post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int) -> Any:
@@ -43,6 +62,7 @@ def fetch_news(
     max_articles: int,
     timeout: int,
 ) -> List[Dict[str, Any]]:
+    actor_id = actor_id.replace("/", "~")
     url = APIFY_API_URL.format(actor_id=actor_id)
     payload = {
         "searchTerm": query,
@@ -143,6 +163,24 @@ def generate_brief(
     raise RuntimeError("Unexpected Contextual response format")
 
 
+def clean_output(text: str) -> str:
+    # Remove XML-like tags and empty markdown links.
+    text = re.sub(r"</?commentary>", "", text)
+    text = re.sub(r"</?fact>", "", text)
+    text = re.sub(r"\[\s*\]\(([^)]+)\)", r"\1", text)
+    text = re.sub(r"\[\(\)\]\(([^)]+)\)", r"\1", text)
+    text = text.replace("[()]", "")
+    text = text.replace("[()", "")
+    # Remove empty numeric citations like [0]() or [12]()
+    text = re.sub(r"\[\d+\]\(\)", "", text)
+    text = re.sub(r"\[\(\)$", "", text, flags=re.MULTILINE)
+    # Ensure URLs are separated by a space if they are glued to prior text.
+    text = re.sub(r"(?<!\s)(https?://)", r" \1", text)
+    # Remove stray opening parentheses before URLs.
+    text = re.sub(r"\(\s*(https?://)", r" \1", text)
+    return text.strip()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a nuclear policy brief using Apify + Contextual")
     parser.add_argument("--query", default=DEFAULT_QUERY, help="Search query for news")
@@ -158,6 +196,8 @@ def main() -> int:
     parser.add_argument("--max-tokens", type=int, default=900, help="Max tokens in output")
     parser.add_argument("--timeout", type=int, default=120, help="HTTP timeout in seconds")
     args = parser.parse_args()
+
+    load_env_file(os.path.join(os.getcwd(), ".env"))
 
     apify_token = os.getenv("APIFY_API_TOKEN")
     contextual_token = os.getenv("CONTEXTUAL_API_KEY")
@@ -193,7 +233,7 @@ def main() -> int:
             args.max_tokens,
             args.timeout,
         )
-        print(brief)
+        print(clean_output(brief))
         return 0
     except Exception as exc:
         eprint(str(exc))
